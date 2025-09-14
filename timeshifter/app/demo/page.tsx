@@ -4,7 +4,8 @@ import { useState } from 'react';
 import { useForm, FormProvider, useFieldArray } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { ScheduleResponse, WeeklySchedule } from '@/lib/types';
+import { ScheduleResponse, WeeklySchedule, DaySchedule, Chronotype } from '@/lib/types';
+import { energyCurve } from '@/lib/circadian';
 
 const formSchema = z.object({
   wake: z.string().min(1, 'Wake time is required'),
@@ -19,7 +20,7 @@ const formSchema = z.object({
   sleep_hours: z.number().min(3).max(12).optional(),
   peak_hour: z.number().min(0).max(23).optional(),
   caffeine_pm: z.boolean().optional(),
-  generateWeekly: z.boolean().default(false),
+  generateWeekly: z.boolean(),
 });
 
 type FormData = z.infer<typeof formSchema>;
@@ -47,6 +48,7 @@ export default function DemoPage() {
   const generateWeekly = methods.watch('generateWeekly');
   const [isLoading, setIsLoading] = useState(false);
   const [serverResp, setServerResp] = useState<ScheduleResponse | null>(null);
+  const [selectedDay, setSelectedDay] = useState<DaySchedule | null>(null);
 
   const onSubmit = async (values: FormData) => {
     // Check for validation errors and focus first invalid field
@@ -255,9 +257,332 @@ export default function DemoPage() {
     }
   };
 
+  // Energy curve visualization component
+  const EnergyCurveChart = ({ wake, sleep, chronotype, schedule }: { 
+    wake: string; 
+    sleep: string; 
+    chronotype: Chronotype; 
+    schedule: any[] 
+  }) => {
+    const curve = energyCurve(wake, sleep, chronotype);
+    const width = 400;
+    const height = 200;
+    const padding = 40;
+    const chartWidth = width - 2 * padding;
+    const chartHeight = height - 2 * padding;
+
+    // Calculate wake and sleep times in minutes
+    const wakeMin = toMinutes(wake);
+    const sleepMin = toMinutes(sleep);
+    
+    // Calculate the time range to display
+    let startTime, endTime, totalMinutes;
+    if (sleepMin > wakeMin) {
+      // Same day (e.g., 7:00 to 23:00)
+      startTime = wakeMin;
+      endTime = sleepMin;
+      totalMinutes = endTime - startTime;
+    } else {
+      // Crosses midnight (e.g., 23:00 to 7:00)
+      startTime = wakeMin;
+      endTime = sleepMin + 1440; // Add 24 hours
+      totalMinutes = endTime - startTime;
+    }
+
+    // Create SVG path for energy curve (only for the relevant time range)
+    const points = [];
+    for (let i = 0; i < totalMinutes; i++) {
+      const currentMin = (startTime + i) % 1440;
+      const energy = curve[currentMin];
+      const x = padding + (i / totalMinutes) * chartWidth;
+      const y = padding + chartHeight - (energy * chartHeight);
+      points.push(`${x},${y}`);
+    }
+    const pathData = `M ${points.join(' L')}`;
+
+    // Create time markers (every 2-4 hours depending on range)
+    const timeMarkers = [];
+    const markerInterval = totalMinutes > 960 ? 240 : 120; // 4 hours or 2 hours
+    for (let i = 0; i <= totalMinutes; i += markerInterval) {
+      const currentMin = (startTime + i) % 1440;
+      const hours = Math.floor(currentMin / 60);
+      const minutes = currentMin % 60;
+      const timeString = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+      const x = padding + (i / totalMinutes) * chartWidth;
+      
+      timeMarkers.push(
+        <g key={i}>
+          <line x1={x} y1={padding + chartHeight} x2={x} y2={padding + chartHeight + 5} stroke="#666" strokeWidth="1" />
+          <text x={x} y={padding + chartHeight + 15} textAnchor="middle" fontSize="10" fill="#666">
+            {timeString}
+          </text>
+        </g>
+      );
+    }
+
+    // Create activity blocks overlay
+    const activityBlocks = schedule.map((block, index) => {
+      const startMin = toMinutes(block.start);
+      const endMin = toMinutes(block.end);
+      
+      // Convert to relative position within the displayed range
+      let relativeStart, relativeEnd;
+      if (sleepMin > wakeMin) {
+        // Same day
+        relativeStart = startMin - startTime;
+        relativeEnd = endMin - startTime;
+      } else {
+        // Crosses midnight
+        relativeStart = startMin >= startTime ? startMin - startTime : startMin + 1440 - startTime;
+        relativeEnd = endMin >= startTime ? endMin - startTime : endMin + 1440 - startTime;
+      }
+      
+      // Only show blocks that are within the displayed range
+      if (relativeStart >= 0 && relativeStart < totalMinutes) {
+        const x = padding + (relativeStart / totalMinutes) * chartWidth;
+        const blockWidth = Math.max(2, ((relativeEnd - relativeStart) / totalMinutes) * chartWidth);
+        const y = padding + chartHeight - (curve[startMin] * chartHeight) - 10;
+        
+        return (
+          <rect
+            key={index}
+            x={x}
+            y={y}
+            width={blockWidth}
+            height="8"
+            fill={getBlockColor(block.label)}
+            opacity="0.7"
+            rx="2"
+          />
+        );
+      }
+      return null;
+    }).filter(Boolean);
+
+    return (
+      <div className="bg-white rounded-lg p-4 border border-gray-200">
+        <h4 className="text-sm font-semibold text-gray-700 mb-3">Energy Curve & Activities</h4>
+        <svg width={width} height={height} className="border border-gray-100 rounded">
+          {/* Grid lines */}
+          {Array.from({ length: 5 }, (_, i) => (
+            <line
+              key={i}
+              x1={padding}
+              y1={padding + (i * chartHeight / 4)}
+              x2={padding + chartWidth}
+              y2={padding + (i * chartHeight / 4)}
+              stroke="#f0f0f0"
+              strokeWidth="1"
+            />
+          ))}
+          
+          {/* Energy curve */}
+          <path
+            d={pathData}
+            fill="none"
+            stroke="#3B82F6"
+            strokeWidth="2"
+          />
+          
+          {/* Fill area under curve */}
+          <path
+            d={`${pathData} L ${padding + chartWidth},${padding + chartHeight} L ${padding},${padding + chartHeight} Z`}
+            fill="url(#energyGradient)"
+            opacity="0.3"
+          />
+          
+          {/* Activity blocks overlay */}
+          {activityBlocks}
+          
+          {/* Time markers */}
+          {timeMarkers}
+          
+          {/* Y-axis labels */}
+          <text x="10" y={padding + 5} fontSize="10" fill="#666">100%</text>
+          <text x="10" y={padding + chartHeight/2} fontSize="10" fill="#666">50%</text>
+          <text x="10" y={padding + chartHeight - 5} fontSize="10" fill="#666">0%</text>
+          
+          {/* Gradient definition */}
+          <defs>
+            <linearGradient id="energyGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stopColor="#3B82F6" stopOpacity="0.3" />
+              <stop offset="100%" stopColor="#3B82F6" stopOpacity="0.1" />
+            </linearGradient>
+          </defs>
+        </svg>
+        <div className="mt-2 text-xs text-gray-500">
+          Blue curve shows your natural energy levels from {wake} to {sleep}. Colored bars show scheduled activities.
+        </div>
+      </div>
+    );
+  };
+
+  // Large Energy curve visualization component for full-screen view
+  const LargeEnergyCurveChart = ({ wake, sleep, chronotype, schedule }: { 
+    wake: string; 
+    sleep: string; 
+    chronotype: Chronotype; 
+    schedule: any[] 
+  }) => {
+    const curve = energyCurve(wake, sleep, chronotype);
+    const width = 800;
+    const height = 400;
+    const padding = 60;
+    const chartWidth = width - 2 * padding;
+    const chartHeight = height - 2 * padding;
+
+    // Calculate wake and sleep times in minutes
+    const wakeMin = toMinutes(wake);
+    const sleepMin = toMinutes(sleep);
+    
+    // Calculate the time range to display
+    let startTime, endTime, totalMinutes;
+    if (sleepMin > wakeMin) {
+      // Same day (e.g., 7:00 to 23:00)
+      startTime = wakeMin;
+      endTime = sleepMin;
+      totalMinutes = endTime - startTime;
+    } else {
+      // Crosses midnight (e.g., 23:00 to 7:00)
+      startTime = wakeMin;
+      endTime = sleepMin + 1440; // Add 24 hours
+      totalMinutes = endTime - startTime;
+    }
+
+    // Create SVG path for energy curve (only for the relevant time range)
+    const points = [];
+    for (let i = 0; i < totalMinutes; i++) {
+      const currentMin = (startTime + i) % 1440;
+      const energy = curve[currentMin];
+      const x = padding + (i / totalMinutes) * chartWidth;
+      const y = padding + chartHeight - (energy * chartHeight);
+      points.push(`${x},${y}`);
+    }
+    const pathData = `M ${points.join(' L')}`;
+
+    // Create time markers (every 1-2 hours depending on range)
+    const timeMarkers = [];
+    const markerInterval = totalMinutes > 960 ? 120 : 60; // 2 hours or 1 hour
+    for (let i = 0; i <= totalMinutes; i += markerInterval) {
+      const currentMin = (startTime + i) % 1440;
+      const hours = Math.floor(currentMin / 60);
+      const minutes = currentMin % 60;
+      const timeString = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+      const x = padding + (i / totalMinutes) * chartWidth;
+      
+      timeMarkers.push(
+        <g key={i}>
+          <line x1={x} y1={padding + chartHeight} x2={x} y2={padding + chartHeight + 8} stroke="#666" strokeWidth="2" />
+          <text x={x} y={padding + chartHeight + 25} textAnchor="middle" fontSize="12" fill="#666" fontWeight="500">
+            {timeString}
+          </text>
+        </g>
+      );
+    }
+
+    // Create activity blocks overlay
+    const activityBlocks = schedule.map((block, index) => {
+      const startMin = toMinutes(block.start);
+      const endMin = toMinutes(block.end);
+      
+      // Convert to relative position within the displayed range
+      let relativeStart, relativeEnd;
+      if (sleepMin > wakeMin) {
+        // Same day
+        relativeStart = startMin - startTime;
+        relativeEnd = endMin - startTime;
+      } else {
+        // Crosses midnight
+        relativeStart = startMin >= startTime ? startMin - startTime : startMin + 1440 - startTime;
+        relativeEnd = endMin >= startTime ? endMin - startTime : endMin + 1440 - startTime;
+      }
+      
+      // Only show blocks that are within the displayed range
+      if (relativeStart >= 0 && relativeStart < totalMinutes) {
+        const x = padding + (relativeStart / totalMinutes) * chartWidth;
+        const blockWidth = Math.max(4, ((relativeEnd - relativeStart) / totalMinutes) * chartWidth);
+        const y = padding + chartHeight - (curve[startMin] * chartHeight) - 15;
+        
+        return (
+          <rect
+            key={index}
+            x={x}
+            y={y}
+            width={blockWidth}
+            height="12"
+            fill={getBlockColor(block.label)}
+            opacity="0.8"
+            rx="3"
+            stroke="white"
+            strokeWidth="1"
+          />
+        );
+      }
+      return null;
+    }).filter(Boolean);
+
+    return (
+      <div className="bg-white rounded-2xl shadow-lg border border-gray-200 p-8">
+        <h4 className="text-xl font-bold text-gray-800 mb-6">Energy Curve & Activities</h4>
+        <svg width={width} height={height} className="border border-gray-200 rounded-lg">
+          {/* Grid lines */}
+          {Array.from({ length: 5 }, (_, i) => (
+            <line
+              key={i}
+              x1={padding}
+              y1={padding + (i * chartHeight / 4)}
+              x2={padding + chartWidth}
+              y2={padding + (i * chartHeight / 4)}
+              stroke="#f0f0f0"
+              strokeWidth="1"
+            />
+          ))}
+          
+          {/* Energy curve */}
+          <path
+            d={pathData}
+            fill="none"
+            stroke="#3B82F6"
+            strokeWidth="3"
+          />
+          
+          {/* Fill area under curve */}
+          <path
+            d={`${pathData} L ${padding + chartWidth},${padding + chartHeight} L ${padding},${padding + chartHeight} Z`}
+            fill="url(#largeEnergyGradient)"
+            opacity="0.3"
+          />
+          
+          {/* Activity blocks overlay */}
+          {activityBlocks}
+          
+          {/* Time markers */}
+          {timeMarkers}
+          
+          {/* Y-axis labels */}
+          <text x="15" y={padding + 8} fontSize="12" fill="#666" fontWeight="500">100%</text>
+          <text x="15" y={padding + chartHeight/2 + 4} fontSize="12" fill="#666" fontWeight="500">50%</text>
+          <text x="15" y={padding + chartHeight - 8} fontSize="12" fill="#666" fontWeight="500">0%</text>
+          
+          {/* Gradient definition */}
+          <defs>
+            <linearGradient id="largeEnergyGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stopColor="#3B82F6" stopOpacity="0.3" />
+              <stop offset="100%" stopColor="#3B82F6" stopOpacity="0.1" />
+            </linearGradient>
+          </defs>
+        </svg>
+        <div className="mt-4 text-sm text-gray-600">
+          Blue curve shows your natural energy levels from {wake} to {sleep}. Colored bars show scheduled activities.
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className={`min-h-screen ${getBackgroundClasses()} py-12 transition-all duration-1000 ease-in-out`}>
       <div className="max-w-4xl mx-auto px-6">
+        
         <div className="text-center mb-12">
           <h1 className={`text-5xl font-bold ${getTitleGradient()} bg-clip-text text-transparent mb-4 tracking-tight transition-all duration-1000 ease-in-out`}>
             Build your circadian-aware day
@@ -337,6 +662,21 @@ export default function DemoPage() {
                     <p id="chronotype-error" className="mt-1 text-sm text-red-600">{methods.formState.errors.chronotype.message}</p>
                   )}
                   <p id="chronotype-help" className="text-xs text-gray-500 mt-1">We'll fine-tune with ML if enabled.</p>
+                </div>
+              </div>
+              
+              {/* Weekly Schedule Option */}
+              <div className="mt-6">
+                <div className="flex items-center p-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-blue-200">
+                  <input
+                    {...methods.register('generateWeekly')}
+                    id="generateWeekly"
+                    type="checkbox"
+                    className="h-5 w-5 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  />
+                  <label htmlFor="generateWeekly" className="ml-3 block text-sm font-semibold text-gray-700">
+                    Generate weekly schedule (7 days)
+                  </label>
                 </div>
               </div>
             </div>
@@ -461,18 +801,6 @@ export default function DemoPage() {
                   />
                   <label htmlFor="useML" className="ml-3 block text-sm font-semibold text-gray-700">
                     Use ML to predict chronotype (PyTorch service)
-                  </label>
-                </div>
-                
-                <div className="flex items-center p-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-blue-200">
-                  <input
-                    {...methods.register('generateWeekly')}
-                    id="generateWeekly"
-                    type="checkbox"
-                    className="h-5 w-5 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                  />
-                  <label htmlFor="generateWeekly" className="ml-3 block text-sm font-semibold text-gray-700">
-                    Generate weekly schedule (7 days)
                   </label>
                 </div>
               </div>
@@ -604,8 +932,85 @@ export default function DemoPage() {
           </form>
         </FormProvider>
 
+        {/* Enlarged Day View - Right after form */}
+        {selectedDay && (
+          <div className="mt-8 bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h3 className="text-2xl font-bold text-gray-900">
+                  {formatDayName(selectedDay.date)} - {formatDate(selectedDay.date)}
+                </h3>
+                <p className="text-gray-600">
+                  Enlarged energy curve and detailed schedule
+                </p>
+              </div>
+              <button
+                onClick={() => setSelectedDay(null)}
+                className="px-4 py-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors duration-200"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Energy Curve Chart */}
+              <div>
+                <EnergyCurveChart 
+                  wake={methods.getValues('wake')}
+                  sleep={methods.getValues('sleep')}
+                  chronotype={methods.getValues('chronotype')}
+                  schedule={selectedDay.schedule}
+                />
+              </div>
+
+              {/* Detailed Schedule */}
+              <div className="bg-gray-50 rounded-lg p-4">
+                <h4 className="text-sm font-semibold text-gray-700 mb-3">Detailed Schedule</h4>
+                <div className="space-y-2 max-h-80 overflow-y-auto">
+                  {selectedDay.schedule.map((block: any, index: number) => (
+                    <div key={index} className="bg-white rounded-lg p-3 border border-gray-200">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center">
+                          <div 
+                            className="w-3 h-3 rounded-full mr-2"
+                            style={{ backgroundColor: getBlockColor(block.label) }}
+                          />
+                          <span className="font-semibold text-sm text-gray-900">
+                            {block.title || getDefaultTitle(block.label)}
+                          </span>
+                        </div>
+                        <span className="text-xs text-gray-500">
+                          {block.start} - {block.end}
+                        </span>
+                      </div>
+                      {block.rationale && (
+                        <p className="text-xs text-gray-600 mb-1">
+                          {block.rationale}
+                        </p>
+                      )}
+                      <div className="flex items-center justify-between text-xs text-gray-500">
+                        <span>Duration: {getDuration(block.start, block.end)}</span>
+                        {block.confidence && (
+                          <span 
+                            className="px-2 py-0.5 rounded-full text-white text-xs"
+                            style={{ backgroundColor: getConfidenceColor(block.confidence) }}
+                          >
+                            {Math.round(block.confidence * 100)}% confidence
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Schedule Preview */}
-        {serverResp && (
+        {serverResp && !selectedDay && (
           <div className="mt-12" role="status" aria-live="polite">
             <div className="text-center mb-8">
               <h2 className="text-3xl font-bold bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent mb-2 tracking-tight">
@@ -651,42 +1056,52 @@ export default function DemoPage() {
                   </div>
                 </div>
 
-                {/* Daily Schedules */}
-                <div className="space-y-4">
+                {/* Daily Schedules - Side by Side */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
                   {serverResp.weeklySchedule.days.map((day, dayIndex) => (
-                    <div key={day.date} className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
-                      <div className="flex items-center justify-between mb-4">
-                        <h3 className="text-lg font-bold text-gray-900">
-                          {formatDayName(day.date)} - {formatDate(day.date)}
+                    <div 
+                      key={day.date} 
+                      className="bg-white rounded-2xl shadow-lg border border-gray-100 p-4 h-fit cursor-pointer hover:shadow-xl transition-all duration-200 hover:border-indigo-300"
+                      onClick={() => setSelectedDay(day)}
+                    >
+                      <div className="mb-4">
+                        <h3 className="text-lg font-bold text-gray-900 mb-2">
+                          {formatDayName(day.date)}
                         </h3>
-                        <div className="flex items-center space-x-4 text-sm text-gray-600">
+                        <div className="text-sm text-gray-600 mb-2">
+                          {formatDate(day.date)}
+                        </div>
+                        <div className="flex items-center justify-between text-xs text-gray-500">
                           <span>Confidence: {Math.round((day.confidence || 0) * 100)}%</span>
                           <span>Duration: {formatDuration(day.totalDuration || 0)}</span>
                         </div>
+                        <div className="mt-2 text-xs text-indigo-600 font-medium">
+                          Click to view energy curve →
+                        </div>
                       </div>
                       
-                      <div className="space-y-2">
+                      <div className="space-y-2 max-h-96 overflow-y-auto">
                         {day.schedule.map((block, blockIndex) => (
                           <div key={blockIndex} className="relative">
                             <div 
-                              className="flex items-center p-3 rounded-lg border-l-4 hover:shadow-sm transition-shadow duration-200 cursor-pointer"
+                              className="flex flex-col p-3 rounded-lg border-l-4 hover:shadow-sm transition-shadow duration-200 cursor-pointer"
                               style={{
                                 borderLeftColor: getBlockColor(block.label),
                                 backgroundColor: getBlockBackgroundColor(block.label)
                               }}
                             >
-                              {/* Time column */}
-                              <div className="w-20 flex-shrink-0 text-right pr-3">
+                              {/* Time and duration row */}
+                              <div className="flex items-center justify-between mb-1">
                                 <div className="text-sm font-semibold text-gray-900">
-                                  {block.start}
+                                  {block.start} - {block.end}
                                 </div>
                                 <div className="text-xs text-gray-500">
-                                  {block.end}
+                                  {getDuration(block.start, block.end)}
                                 </div>
                               </div>
                               
                               {/* Event content */}
-                              <div className="flex-1 min-w-0">
+                              <div className="min-w-0">
                                 <div className="flex items-center mb-1">
                                   <h4 className="font-semibold text-gray-900 text-sm truncate">
                                     {block.title || getDefaultTitle(block.label)}
@@ -700,17 +1115,10 @@ export default function DemoPage() {
                                 </div>
                                 
                                 {block.rationale && (
-                                  <p className="text-xs text-gray-600 truncate">
+                                  <p className="text-xs text-gray-600 line-clamp-2">
                                     {block.rationale}
                                   </p>
                                 )}
-                              </div>
-                              
-                              {/* Duration indicator */}
-                              <div className="flex-shrink-0 ml-3">
-                                <div className="text-xs text-gray-500 text-right">
-                                  {getDuration(block.start, block.end)}
-                                </div>
                               </div>
                             </div>
                           </div>
@@ -720,7 +1128,10 @@ export default function DemoPage() {
                   ))}
                 </div>
               </div>
-            ) : (
+            ) : null}
+
+
+            {!serverResp.weeklySchedule && (
               /* Daily Schedule Display */
               <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
                 <div className="space-y-2">
