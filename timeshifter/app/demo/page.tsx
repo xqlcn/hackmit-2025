@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useForm, FormProvider, useFieldArray } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { ScheduleResponse } from '@/lib/types';
+import { ScheduleResponse, WeeklySchedule } from '@/lib/types';
 
 const formSchema = z.object({
   wake: z.string().min(1, 'Wake time is required'),
@@ -19,6 +19,7 @@ const formSchema = z.object({
   sleep_hours: z.number().min(3).max(12).optional(),
   peak_hour: z.number().min(0).max(23).optional(),
   caffeine_pm: z.boolean().optional(),
+  generateWeekly: z.boolean().default(false),
 });
 
 type FormData = z.infer<typeof formSchema>;
@@ -32,6 +33,7 @@ export default function DemoPage() {
       chronotype: 'intermediate',
       commitments: [],
       useML: false,
+      generateWeekly: false,
     },
   });
 
@@ -42,6 +44,7 @@ export default function DemoPage() {
 
   const useML = methods.watch('useML');
   const chronotype = methods.watch('chronotype');
+  const generateWeekly = methods.watch('generateWeekly');
   const [isLoading, setIsLoading] = useState(false);
   const [serverResp, setServerResp] = useState<ScheduleResponse | null>(null);
 
@@ -98,6 +101,7 @@ export default function DemoPage() {
           sleep: values.sleep,
           chronotype: finalChronotype,
           commitments: values.commitments,
+          generateWeekly: values.generateWeekly,
         }),
       });
 
@@ -147,6 +151,107 @@ export default function DemoPage() {
       case 'intermediate':
       default:
         return 'bg-gradient-to-r from-blue-600 to-cyan-600';
+    }
+  };
+
+  // Helper functions for calendar-style blocks
+  const getBlockColor = (label: string) => {
+    const colors = {
+      sleep: '#6366F1',
+      focus: '#3B82F6', 
+      exercise: '#10B981',
+      break: '#F59E0B',
+      commitment: '#8B5CF6',
+      meal: '#EF4444',
+      social: '#EC4899',
+      travel: '#6B7280',
+      personal: '#14B8A6',
+      light: '#84CC16'
+    };
+    return colors[label as keyof typeof colors] || '#6B7280';
+  };
+
+  const getBlockBackgroundColor = (label: string) => {
+    const colors = {
+      sleep: '#F0F4FF',
+      focus: '#EFF6FF',
+      exercise: '#ECFDF5',
+      break: '#FFFBEB',
+      commitment: '#F3E8FF',
+      meal: '#FEF2F2',
+      social: '#FDF2F8',
+      travel: '#F9FAFB',
+      personal: '#F0FDFA',
+      light: '#F7FEE7'
+    };
+    return colors[label as keyof typeof colors] || '#F9FAFB';
+  };
+
+  const getDefaultTitle = (label: string) => {
+    const titles = {
+      sleep: 'Sleep',
+      focus: 'Deep Focus Work',
+      exercise: 'Physical Activity',
+      break: 'Rest & Recovery',
+      commitment: 'Commitment',
+      meal: 'Meal Time',
+      social: 'Social Activity',
+      travel: 'Travel Time',
+      personal: 'Personal Time',
+      light: 'Light Activity'
+    };
+    return titles[label as keyof typeof titles] || 'Activity';
+  };
+
+  const getConfidenceColor = (confidence: number) => {
+    if (confidence >= 0.8) return '#10B981'; // Green
+    if (confidence >= 0.6) return '#F59E0B'; // Yellow
+    return '#EF4444'; // Red
+  };
+
+  const getDuration = (start: string, end: string) => {
+    const startMin = toMinutes(start);
+    const endMin = toMinutes(end);
+    const duration = endMin > startMin ? endMin - startMin : (1440 - startMin) + endMin;
+    
+    if (duration < 60) {
+      return `${duration}m`;
+    } else {
+      const hours = Math.floor(duration / 60);
+      const minutes = duration % 60;
+      return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+    }
+  };
+
+  const toMinutes = (time: string) => {
+    const [hours, minutes] = time.split(':').map(Number);
+    return hours * 60 + (minutes || 0);
+  };
+
+  // Helper functions for weekly schedule display
+  const formatDateRange = (start: string, end: string) => {
+    const startDate = new Date(start);
+    const endDate = new Date(end);
+    return `${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()}`;
+  };
+
+  const formatDayName = (dateString: string) => {
+    const date = new Date(dateString);
+    return date.toLocaleDateString('en-US', { weekday: 'long' });
+  };
+
+  const formatDate = (dateString: string) => {
+    const date = new Date(dateString);
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
+  const formatDuration = (minutes: number) => {
+    if (minutes < 60) {
+      return `${minutes}m`;
+    } else {
+      const hours = Math.floor(minutes / 60);
+      const mins = minutes % 60;
+      return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
     }
   };
 
@@ -346,16 +451,30 @@ export default function DemoPage() {
                 <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Machine Learning</h2>
               </div>
               
-              <div className="flex items-center p-4 bg-gradient-to-r from-purple-50 to-pink-50 rounded-xl border border-purple-200">
-                <input
-                  {...methods.register('useML')}
-                  id="useML"
-                  type="checkbox"
-                  className="h-5 w-5 text-purple-600 focus:ring-purple-500 border-gray-300 rounded"
-                />
-                <label htmlFor="useML" className="ml-3 block text-sm font-semibold text-gray-700">
-                  Use ML to predict chronotype (PyTorch service)
-                </label>
+              <div className="space-y-4">
+                <div className="flex items-center p-4 bg-gradient-to-r from-purple-50 to-pink-50 rounded-xl border border-purple-200">
+                  <input
+                    {...methods.register('useML')}
+                    id="useML"
+                    type="checkbox"
+                    className="h-5 w-5 text-purple-600 focus:ring-purple-500 border-gray-300 rounded"
+                  />
+                  <label htmlFor="useML" className="ml-3 block text-sm font-semibold text-gray-700">
+                    Use ML to predict chronotype (PyTorch service)
+                  </label>
+                </div>
+                
+                <div className="flex items-center p-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-blue-200">
+                  <input
+                    {...methods.register('generateWeekly')}
+                    id="generateWeekly"
+                    type="checkbox"
+                    className="h-5 w-5 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  />
+                  <label htmlFor="generateWeekly" className="ml-3 block text-sm font-semibold text-gray-700">
+                    Generate weekly schedule (7 days)
+                  </label>
+                </div>
               </div>
 
               {useML && (
@@ -490,51 +609,185 @@ export default function DemoPage() {
           <div className="mt-12" role="status" aria-live="polite">
             <div className="text-center mb-8">
               <h2 className="text-3xl font-bold bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent mb-2 tracking-tight">
-                Your Personalized Schedule
+                {serverResp.weeklySchedule ? 'Your Weekly Schedule' : 'Your Personalized Schedule'}
               </h2>
-              <p className="text-gray-600">Optimized for your circadian rhythm</p>
+              <p className="text-gray-600">
+                {serverResp.weeklySchedule ? 'Optimized for your circadian rhythm across 7 days' : 'Optimized for your circadian rhythm'}
+              </p>
             </div>
-            <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-8">
-              <div className="space-y-4">
-                {serverResp.schedule.map((block, index) => (
-                  <div key={index} className="flex items-center justify-between p-4 bg-gradient-to-r from-gray-50 to-gray-100 rounded-xl border border-gray-200 hover:shadow-md transition-shadow duration-200">
-                    <div className="flex items-center flex-1">
-                      <div className="w-12 h-12 bg-gradient-to-r from-indigo-500 to-purple-500 rounded-lg flex items-center justify-center mr-4">
-                        <span className="text-white font-bold text-sm">
-                          {block.label === 'sleep' ? '😴' : 
-                           block.label === 'focus' ? '🧠' : 
-                           block.label === 'exercise' ? '💪' : 
-                           block.label === 'break' ? '☕' : 
-                           block.label === 'commitment' ? '📅' : '💡'}
-                        </span>
-                      </div>
-                      <div className="flex-1">
-                        <div className="flex items-center mb-1">
-                          <span className="font-bold text-lg text-gray-900 mr-3">
-                            {block.start}–{block.end}
-                          </span>
-                          <span className="px-3 py-1 bg-white rounded-full text-sm font-medium text-gray-700 capitalize border border-gray-200">
-                            {block.label}
-                          </span>
-                        </div>
-                        {block.rationale && (
-                          <p className="text-gray-600 text-sm">{block.rationale}</p>
-                        )}
+            
+            {serverResp.weeklySchedule ? (
+              /* Weekly Schedule Display */
+              <div className="space-y-6">
+                {/* Weekly Overview */}
+                <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-xl font-bold text-gray-900">Week Overview</h3>
+                    <div className="text-sm text-gray-600">
+                      {formatDateRange(serverResp.weeklySchedule.weekStart, serverResp.weeklySchedule.weekEnd)}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="bg-blue-50 rounded-lg p-4">
+                      <div className="text-sm text-blue-600 font-medium">Overall Confidence</div>
+                      <div className="text-2xl font-bold text-blue-900">
+                        {Math.round((serverResp.weeklySchedule.metadata?.overallConfidence || 0) * 100)}%
                       </div>
                     </div>
-                    {block.confidence && (
-                      <div className="flex items-center">
-                        <div className="w-16 h-16 bg-gradient-to-r from-green-100 to-emerald-100 rounded-full flex items-center justify-center">
-                          <span className="text-green-700 font-bold text-sm">
-                            {Math.round(block.confidence * 100)}%
-                          </span>
+                    <div className="bg-green-50 rounded-lg p-4">
+                      <div className="text-sm text-green-600 font-medium">Total Focus Blocks</div>
+                      <div className="text-2xl font-bold text-green-900">
+                        {serverResp.weeklySchedule.days.reduce((sum, day) => 
+                          sum + day.schedule.filter(block => block.label === 'focus').length, 0)}
+                      </div>
+                    </div>
+                    <div className="bg-purple-50 rounded-lg p-4">
+                      <div className="text-sm text-purple-600 font-medium">Exercise Sessions</div>
+                      <div className="text-2xl font-bold text-purple-900">
+                        {serverResp.weeklySchedule.days.reduce((sum, day) => 
+                          sum + day.schedule.filter(block => block.label === 'exercise').length, 0)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Daily Schedules */}
+                <div className="space-y-4">
+                  {serverResp.weeklySchedule.days.map((day, dayIndex) => (
+                    <div key={day.date} className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-lg font-bold text-gray-900">
+                          {formatDayName(day.date)} - {formatDate(day.date)}
+                        </h3>
+                        <div className="flex items-center space-x-4 text-sm text-gray-600">
+                          <span>Confidence: {Math.round((day.confidence || 0) * 100)}%</span>
+                          <span>Duration: {formatDuration(day.totalDuration || 0)}</span>
                         </div>
                       </div>
-                    )}
-                  </div>
-                ))}
+                      
+                      <div className="space-y-2">
+                        {day.schedule.map((block, blockIndex) => (
+                          <div key={blockIndex} className="relative">
+                            <div 
+                              className="flex items-center p-3 rounded-lg border-l-4 hover:shadow-sm transition-shadow duration-200 cursor-pointer"
+                              style={{
+                                borderLeftColor: getBlockColor(block.label),
+                                backgroundColor: getBlockBackgroundColor(block.label)
+                              }}
+                            >
+                              {/* Time column */}
+                              <div className="w-20 flex-shrink-0 text-right pr-3">
+                                <div className="text-sm font-semibold text-gray-900">
+                                  {block.start}
+                                </div>
+                                <div className="text-xs text-gray-500">
+                                  {block.end}
+                                </div>
+                              </div>
+                              
+                              {/* Event content */}
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center mb-1">
+                                  <h4 className="font-semibold text-gray-900 text-sm truncate">
+                                    {block.title || getDefaultTitle(block.label)}
+                                  </h4>
+                                  {block.confidence && (
+                                    <span className="ml-2 px-2 py-0.5 text-xs font-medium rounded-full"
+                                          style={{ backgroundColor: getConfidenceColor(block.confidence), color: 'white' }}>
+                                      {Math.round(block.confidence * 100)}%
+                                    </span>
+                                  )}
+                                </div>
+                                
+                                {block.rationale && (
+                                  <p className="text-xs text-gray-600 truncate">
+                                    {block.rationale}
+                                  </p>
+                                )}
+                              </div>
+                              
+                              {/* Duration indicator */}
+                              <div className="flex-shrink-0 ml-3">
+                                <div className="text-xs text-gray-500 text-right">
+                                  {getDuration(block.start, block.end)}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
+            ) : (
+              /* Daily Schedule Display */
+              <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+                <div className="space-y-2">
+                  {serverResp.schedule.map((block, index) => (
+                    <div key={index} className="relative">
+                      {/* Calendar-style block */}
+                      <div 
+                        className="flex items-center p-3 rounded-lg border-l-4 hover:shadow-sm transition-shadow duration-200 cursor-pointer"
+                        style={{
+                          borderLeftColor: getBlockColor(block.label),
+                          backgroundColor: getBlockBackgroundColor(block.label)
+                        }}
+                      >
+                        {/* Time column */}
+                        <div className="w-20 flex-shrink-0 text-right pr-3">
+                          <div className="text-sm font-semibold text-gray-900">
+                            {block.start}
+                          </div>
+                          <div className="text-xs text-gray-500">
+                            {block.end}
+                          </div>
+                        </div>
+                        
+                        {/* Event content */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center mb-1">
+                            <h3 className="font-semibold text-gray-900 text-sm truncate">
+                              {block.title || getDefaultTitle(block.label)}
+                            </h3>
+                            {block.confidence && (
+                              <span className="ml-2 px-2 py-0.5 text-xs font-medium rounded-full"
+                                    style={{ backgroundColor: getConfidenceColor(block.confidence), color: 'white' }}>
+                                {Math.round(block.confidence * 100)}%
+                              </span>
+                            )}
+                          </div>
+                          
+                          {block.rationale && (
+                            <p className="text-xs text-gray-600 truncate">
+                              {block.rationale}
+                            </p>
+                          )}
+                          
+                          {/* Tags */}
+                          {block.tags && block.tags.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {block.tags.slice(0, 2).map((tag, tagIndex) => (
+                                <span key={tagIndex} className="px-1.5 py-0.5 text-xs bg-gray-100 text-gray-600 rounded">
+                                  {tag}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        
+                        {/* Duration indicator */}
+                        <div className="flex-shrink-0 ml-3">
+                          <div className="text-xs text-gray-500 text-right">
+                            {getDuration(block.start, block.end)}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
